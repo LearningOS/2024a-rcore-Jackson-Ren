@@ -114,12 +114,12 @@ impl PageTable {
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.get_pte_array()[*idx];
+            if !pte.is_valid() {
+                return None;
+            }
             if i == 2 {
                 result = Some(pte);
                 break;
-            }
-            if !pte.is_valid() {
-                return None;
             }
             ppn = pte.ppn();
         }
@@ -274,5 +274,35 @@ impl Iterator for UserBufferIterator {
             }
             Some(r)
         }
+    }
+}
+/// save data to application address space
+pub fn save_program_data(token: usize, ptr: *const u8, data: &[u8]) {
+    let page_table = PageTable::from_token(token);
+
+    let mut src_start: usize = 0;
+    let mut dst_start = ptr as usize;
+    let mut len = data.len();
+
+    while len > 0 {
+        let dst_start_va = VirtAddr::from(dst_start);
+
+        let mut vpn = dst_start_va.floor();
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        vpn.step();
+        let dst_end_va = VirtAddr::from(dst_start + len).min(VirtAddr::from(vpn));
+    
+        let dst = if dst_end_va.page_offset() == 0 {
+            &mut ppn.get_bytes_array()[dst_start_va.page_offset()..]
+        } else {
+            &mut ppn.get_bytes_array()[dst_start_va.page_offset()..dst_end_va.page_offset()]
+        };
+
+        let src = &data[src_start..src_start + dst.len()];
+        dst.copy_from_slice(src);
+
+        len -= dst.len();
+        src_start += dst.len();
+        dst_start += dst.len();
     }
 }
