@@ -318,6 +318,10 @@ impl MapArea {
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
+        // print!(
+        //     "map new, start vpn={:?}, end vpn={:?}\n",
+        //     start_vpn, end_vpn
+        // );
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
             data_frames: BTreeMap::new(),
@@ -346,12 +350,14 @@ impl MapArea {
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        // print!("page table map: vpn={:?}\n", vpn);
         page_table.map(vpn, ppn, pte_flags);
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
+        // print!("page table unmap: vpn={:?}\n", vpn);
         page_table.unmap(vpn);
     }
     pub fn map(&mut self, page_table: &mut PageTable) {
@@ -420,6 +426,12 @@ bitflags! {
         const X = 1 << 3;
         ///Accessible in U mode
         const U = 1 << 4;
+    }
+}
+
+impl From<u8> for MapPermission {
+    fn from(v: u8) -> Self {
+        MapPermission { bits: v }
     }
 }
 

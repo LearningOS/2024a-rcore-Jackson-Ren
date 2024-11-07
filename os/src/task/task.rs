@@ -1,8 +1,8 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, StepByOne, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -68,6 +68,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Total running time of task
+    pub run_time: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +124,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    run_time: 0,
                 })
             },
         };
@@ -191,6 +199,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
+                    run_time: 0,
                 })
             },
         });
@@ -235,6 +245,80 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// map a new area for user
+    pub fn mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        if port & (!0b111) != 0 {
+            return -1;
+        }
+        if port & 0b111 == 0 {
+            return -1;
+        }
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+
+        let mut inner = self.inner_exclusive_access();
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+
+        let mut vpn = start_va.floor();
+        while vpn != end_va.ceil() {
+            if inner.memory_set.translate(vpn).is_some() {
+                return -1;
+            }
+            vpn.step();
+        }
+
+        let mut permission: MapPermission = MapPermission::U;
+        permission |= MapPermission::from(((port & 0b111) << 1) as u8);
+
+        inner.memory_set.insert_framed_area(
+            VirtAddr::from(start),
+            VirtAddr::from(start + len),
+            permission,
+        );
+        0
+    }
+
+    /// munmap a new area for user
+    pub fn munmap(&self, start: usize, len: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+
+        let mut inner = self.inner_exclusive_access();
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+
+        let mut vpn = start_va.floor();
+        while vpn != end_va.ceil() {
+            if inner.memory_set.translate(vpn).is_none() {
+                return -1;
+            }
+            vpn.step();
+        }
+
+        inner
+            .memory_set
+            .remove_area_with_start_vpn(start_va.floor());
+
+        0
+    }
+
+    /// record syscall times
+    pub fn record_syscall_times(&self, id: usize) {
+        let mut inner = self.inner_exclusive_access();
+
+        inner.syscall_times[id] += 1;
+    }
+
+    /// get the current task's info.
+    pub fn task_info(&self) -> (TaskStatus, [u32; MAX_SYSCALL_NUM], usize) {
+        let inner = self.inner_exclusive_access();
+
+        (inner.task_status, inner.syscall_times, inner.run_time)
     }
 }
 

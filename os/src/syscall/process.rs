@@ -4,12 +4,14 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{save_program_data, translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, TaskStatus,
     },
+    timer::{get_time_ms, get_time_us},
 };
+use core::{mem::size_of, slice::from_raw_parts};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -79,7 +81,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    trace!("kernel::pid[{}] sys_waitpid [{}]", current_task().unwrap().pid.0, pid);
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -118,40 +124,66 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let us = get_time_us();
+    let time_val = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let data: &[u8] = unsafe {
+        from_raw_parts(
+            (&time_val as *const TimeVal) as *const u8,
+            size_of::<TimeVal>(),
+        )
+    };
+    save_program_data(current_user_token(), _ts as *const u8, data);
+
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let task_info = {
+        let tmp = current_task().unwrap().task_info();
+        TaskInfo {
+            status: tmp.0,
+            syscall_times: tmp.1,
+            time: get_time_ms() - tmp.2,
+        }
+    };
+
+    let data: &[u8] = unsafe {
+        from_raw_parts(
+            (&task_info as *const TaskInfo) as *const u8,
+            size_of::<TaskInfo>(),
+        )
+    };
+    save_program_data(current_user_token(), _ti as *const u8, data);
+
+    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    // start 没有按页大小对齐
+
+    // port & !0x7 != 0 (port 其余位必须为0) port & 0x7 = 0 (这样的内存无意义)
+
+    // [start, start + len) 中存在已经被映射的页
+
+    // 物理内存不足
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+
+    current_task().unwrap().mmap(_start, _len, _port)
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel:pid[{}] sys_munmap", current_task().unwrap().pid.0);
+    // [start, start + len) 中存在未被映射的虚存。
+
+    current_task().unwrap().munmap(_start, _len)
 }
 
 /// change data segment size
