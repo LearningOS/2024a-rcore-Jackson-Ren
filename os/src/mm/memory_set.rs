@@ -63,6 +63,15 @@ impl MemorySet {
             None,
         );
     }
+    /// Erase area Assume that is valid.
+    pub fn erase_framed_area(&mut self, start_va: VirtAddr) {
+        self.areas.retain_mut(|area|if area.vpn_range.get_start() == start_va.floor() {
+            area.shrink_to(&mut self.page_table, area.vpn_range.get_end());
+            false
+        } else {
+            true
+        });
+    }
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
@@ -233,6 +242,19 @@ impl MemorySet {
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }
+    /// Check a virtual page number is valid
+    pub fn is_valid(&self, vpn: VirtPageNum) -> bool {
+        if self
+            .areas
+            .iter()
+            .find(|area| area.vpn_range.get_start() <= vpn && vpn < area.vpn_range.get_end())
+            .is_some()
+        {
+            true
+        } else {
+            false
+        }
+    }
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {
@@ -280,6 +302,10 @@ impl MapArea {
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
+        // print!(
+        //     "map new, start vpn={:?}, end vpn={:?}\n",
+        //     start_vpn, end_vpn
+        // );
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),
             data_frames: BTreeMap::new(),
@@ -300,6 +326,7 @@ impl MapArea {
             }
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        // print!("page table map: vpn={:?}\n", vpn);
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
@@ -307,6 +334,7 @@ impl MapArea {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
+        // print!("page table unmap: vpn={:?}\n", vpn);
         page_table.unmap(vpn);
     }
     pub fn map(&mut self, page_table: &mut PageTable) {
@@ -376,6 +404,12 @@ bitflags! {
         const X = 1 << 3;
         ///Accessible in U mode
         const U = 1 << 4;
+    }
+}
+
+impl From<u8> for MapPermission {
+    fn from(v: u8) -> Self {
+        MapPermission { bits: v }
     }
 }
 

@@ -1,8 +1,8 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
+    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, StepByOne, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
 
@@ -28,6 +28,12 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Total running time of task
+    pub run_time: usize,
 }
 
 impl TaskControlBlock {
@@ -63,6 +69,8 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            run_time: 0,
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -95,6 +103,64 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// map a new area for user
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        if port & (!0b111) != 0 {
+            return -1;
+        }
+        if port & 0b111 == 0 {
+            return -1;
+        }
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+
+        let mut start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len - 1);
+        while start_va <= end_va {
+            let mut start_vpn = start_va.floor();
+            // print!("check vpn:{:?}; is_valid:{:?};\n", start_vpn, self.memory_set.is_valid(start_vpn));
+            if self.memory_set.is_valid(start_vpn) {
+                return -1;
+            }
+            start_vpn.step();
+            start_va = start_vpn.into();
+        }
+
+        let mut permission: MapPermission = MapPermission::U;
+        permission |= MapPermission::from(((port & 0b111) << 1) as u8);
+
+        self.memory_set.insert_framed_area(
+            VirtAddr::from(start),
+            VirtAddr::from(start + len - 1),
+            permission,
+        );
+        0
+    }
+
+    /// munmap a new area for user
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+
+        let mut start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len - 1);
+        while start_va <= end_va {
+            let mut start_vpn = start_va.floor();
+            if !self.memory_set.is_valid(start_vpn) {
+                return -1;
+            }
+            start_vpn.step();
+            start_va = start_vpn.into();
+        }
+
+        self.memory_set
+            .erase_framed_area(VirtAddr::from(start));
+        
+        0
     }
 }
 
