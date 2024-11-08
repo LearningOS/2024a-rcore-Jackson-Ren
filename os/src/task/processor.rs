@@ -7,6 +7,7 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::BIG_STRIDE;
 use crate::sync::UPSafeCell;
 use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
@@ -63,6 +64,8 @@ pub fn run_tasks() {
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
             if task_inner.run_time == 0 {task_inner.run_time = get_time_ms()}
+            // stride pass
+            task_inner.stride = task_inner.stride + BIG_STRIDE / task_inner.priority as usize;
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually

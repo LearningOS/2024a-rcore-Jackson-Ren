@@ -27,4 +27,4 @@ pub const MEMORY_END: usize = 0x88000000;
 pub const MMIO: &[(usize, usize)] = &[(0x10001000, 0x1000)];
 
 /// the max stride of process
-pub const BIG_STRIDE: usize = 0xFF;
+pub const BIG_STRIDE: usize = 0xFFFF;
