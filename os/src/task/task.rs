@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE, BIG_STRIDE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MapPermission,MemorySet, PhysPageNum, StepByOne,VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -77,6 +77,12 @@ pub struct TaskControlBlockInner {
 
     /// Total running time of task
     pub run_time: usize,
+
+    /// Task priority [2, 16]
+    pub priority: isize,
+
+    /// Task running stride
+    pub stride: u8,
 }
 
 impl TaskControlBlockInner {
@@ -143,6 +149,8 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     syscall_times: [0; MAX_SYSCALL_NUM],
                     run_time: 0,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
@@ -226,6 +234,8 @@ impl TaskControlBlock {
                     program_brk: parent_inner.program_brk,
                     syscall_times: [0; MAX_SYSCALL_NUM],
                     run_time: 0,
+                    priority: parent_inner.priority,
+                    stride: 0,
                 })
             },
         });
@@ -238,6 +248,27 @@ impl TaskControlBlock {
         // return
         task_control_block
         // **** release child PCB
+        // ---- release parent PCB
+    }
+
+    /// parent process spawn a child process and exec from elf
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // ---- access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
+
+        // init child PCB
+        let task_control_block = Arc::new(TaskControlBlock::new(elf_data));
+        // set parent
+        // **** access child PCB exclusively
+        task_control_block.inner_exclusive_access().parent = Some(Arc::downgrade(self));
+        task_control_block.inner_exclusive_access().priority = parent_inner.priority;
+        // **** release child PCB
+
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+
+        // return
+        task_control_block
         // ---- release parent PCB
     }
 
@@ -330,6 +361,16 @@ impl TaskControlBlock {
             .remove_area_with_start_vpn(start_va.floor());
 
         0
+    }
+
+    /// set task priority
+    pub fn set_priority(&self, priority: isize) -> isize{
+        if priority < 2 || priority > (BIG_STRIDE as isize) {
+            -1
+        } else {
+            self.inner_exclusive_access().priority = priority;
+            0
+        }
     }
 
     /// record syscall times
