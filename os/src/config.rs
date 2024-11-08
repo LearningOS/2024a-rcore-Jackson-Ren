@@ -25,4 +25,4 @@ pub const CLOCK_FREQ: usize = 12500000;
 pub const MEMORY_END: usize = 0x88000000;
 
 /// the max stride of process
-pub const BIG_STRIDE: usize = 0xFF;
+pub const BIG_STRIDE: usize = 0xFFFF;
