@@ -217,6 +217,37 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .get_mut()
 }
 
+/// save data to application address space
+pub fn save_program_data(token: usize, ptr: *const u8, data: &[u8]) {
+    let page_table = PageTable::from_token(token);
+
+    let mut src_start: usize = 0;
+    let mut dst_start = ptr as usize;
+    let mut len = data.len();
+
+    while len > 0 {
+        let dst_start_va = VirtAddr::from(dst_start);
+
+        let mut vpn = dst_start_va.floor();
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        vpn.step();
+        let dst_end_va = VirtAddr::from(dst_start + len).min(VirtAddr::from(vpn));
+    
+        let dst = if dst_end_va.page_offset() == 0 {
+            &mut ppn.get_bytes_array()[dst_start_va.page_offset()..]
+        } else {
+            &mut ppn.get_bytes_array()[dst_start_va.page_offset()..dst_end_va.page_offset()]
+        };
+
+        let src = &data[src_start..src_start + dst.len()];
+        dst.copy_from_slice(src);
+
+        len -= dst.len();
+        src_start += dst.len();
+        dst_start += dst.len();
+    }
+}
+
 /// An abstraction over a buffer passed from user space to kernel space
 pub struct UserBuffer {
     /// A list of buffers
