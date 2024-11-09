@@ -2,8 +2,8 @@
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
-use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MapPermission,MemorySet, PhysPageNum, StepByOne,VirtAddr, KERNEL_SPACE};
+use crate::fs::{File, OSInode, Stdin, Stdout};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, StepByOne, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -65,6 +65,7 @@ pub struct TaskControlBlockInner {
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+    pub fd_innode_table: Vec<Option<Arc<OSInode>>>,
 
     /// Heap bottom
     pub heap_bottom: usize,
@@ -103,6 +104,7 @@ impl TaskControlBlockInner {
             fd
         } else {
             self.fd_table.push(None);
+            self.fd_innode_table.push(None);
             self.fd_table.len() - 1
         }
     }
@@ -145,6 +147,7 @@ impl TaskControlBlock {
                         // 2 -> stderr
                         Some(Arc::new(Stdout)),
                     ],
+                    fd_innode_table: vec![None, None, None],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     syscall_times: [0; MAX_SYSCALL_NUM],
@@ -230,6 +233,7 @@ impl TaskControlBlock {
                     children: Vec::new(),
                     exit_code: 0,
                     fd_table: new_fd_table,
+                    fd_innode_table: parent_inner.fd_innode_table.clone(),
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     syscall_times: [0; MAX_SYSCALL_NUM],
@@ -364,7 +368,7 @@ impl TaskControlBlock {
     }
 
     /// set task priority
-    pub fn set_priority(&self, priority: isize) -> isize{
+    pub fn set_priority(&self, priority: isize) -> isize {
         if priority < 2 {
             -1
         } else {
