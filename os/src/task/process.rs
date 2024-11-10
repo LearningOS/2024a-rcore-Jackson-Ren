@@ -49,6 +49,22 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// enable deadlock check
+    pub dead_lock_check: bool,
+
+    /// resource available list
+    pub mutex_resource_list: Vec<isize>,
+    /// need list
+    pub mutex_need_list: Vec<Vec<isize /*count*/>>,
+    /// allocation list
+    pub mutex_alloc_list: Vec<Vec<isize /*count*/>>,
+
+    /// resource available list
+    pub sem_resource_list: Vec<isize>,
+    /// need list
+    pub sem_need_list: Vec<Vec<isize /*count*/>>,
+    /// allocation list
+    pub sem_alloc_list: Vec<Vec<isize /*count*/>>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +97,205 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// alloc deadlock check graph
+    pub fn alloc_dead_lock_graph(&mut self) {
+        self.mutex_need_list.push(Vec::new());
+        self.mutex_alloc_list.push(Vec::new());
+        self.sem_need_list.push(Vec::new());
+        self.sem_alloc_list.push(Vec::new());
+    }
+    /// alloc deadlock check graph
+    pub fn alloc_dead_lock_graph_add_task(&mut self, tid: usize) {
+        let mutex_n = self.mutex_need_list[0].len();
+        let sem_n = self.sem_need_list[0].len();
+
+        while self.mutex_need_list.len() < tid + 1 {
+            let i = self.mutex_need_list.len();
+            self.mutex_need_list.push(Vec::new());
+            while self.mutex_need_list[i].len() < mutex_n {
+                self.mutex_need_list[i].push(0);
+            }
+            self.mutex_alloc_list.push(Vec::new());
+            while self.mutex_alloc_list[i].len() < mutex_n {
+                self.mutex_alloc_list[i].push(0);
+            }
+            self.sem_need_list.push(Vec::new());
+            while self.sem_need_list[i].len() < sem_n {
+                self.sem_need_list[i].push(0);
+            }
+            self.sem_alloc_list.push(Vec::new());
+            while self.sem_alloc_list[i].len() < sem_n {
+                self.sem_alloc_list[i].push(0);
+            }
+        }
+    }
+    /// alloc deadlock check graph
+    pub fn alloc_dead_lock_graph_add_sem(&mut self, sem_id: usize, count: isize) {
+        self.sem_need_list.iter_mut().for_each(|vec| {
+            while vec.len() < sem_id + 1 {
+                vec.push(0);
+            }
+        });
+        self.sem_alloc_list.iter_mut().for_each(|vec| {
+            while vec.len() < sem_id + 1 {
+                vec.push(0);
+            }
+        });
+        while self.sem_resource_list.len() < sem_id + 1 {
+            self.sem_resource_list.push(0);
+        }
+        self.sem_resource_list[sem_id] = count;
+    }
+
+    /// alloc deadlock check graph
+    pub fn alloc_dead_lock_graph_add_mutex(&mut self, mutex_id: usize, count: isize) {
+        self.mutex_need_list.iter_mut().for_each(|vec| {
+            while vec.len() < mutex_id + 1 {
+                vec.push(0);
+            }
+        });
+        self.mutex_alloc_list.iter_mut().for_each(|vec| {
+            while vec.len() < mutex_id + 1 {
+                vec.push(0);
+            }
+        });
+        while self.mutex_resource_list.len() < mutex_id + 1 {
+            self.mutex_resource_list.push(0);
+        }
+        self.mutex_resource_list[mutex_id] = count;
+    }
+    /// mutex lock
+    pub fn dead_lock_graph_lock_mutex(&mut self, tid: usize, mutex_id: usize) -> isize {
+        self.mutex_need_list[tid][mutex_id] += 1;
+        let ret = self.check_dead_lock_mutex();
+        self.mutex_resource_list[mutex_id] -= 1;
+        self.mutex_need_list[tid][mutex_id] -= 1;
+        self.mutex_alloc_list[tid][mutex_id] += 1;
+        ret
+    }
+    /// mutex unlock
+    pub fn dead_lock_graph_unlock_mutex(&mut self, tid: usize, mutex_id: usize) {
+        self.mutex_resource_list[mutex_id] += 1;
+        self.mutex_alloc_list[tid][mutex_id] -= 1;
+    }
+    /// sem down
+    pub fn dead_lock_graph_down_sem(&mut self, tid: usize, sem_id: usize) -> isize {
+        self.sem_need_list[tid][sem_id] += 1;
+        let ret = self.check_dead_lock();
+        self.sem_need_list[tid][sem_id] -= 1;
+
+        ret
+    }
+    /// get sem
+    pub fn get_sem_resource(&mut self, tid: usize, sem_id: usize) {
+        self.sem_resource_list[sem_id] -= 1;
+        self.sem_alloc_list[tid][sem_id] += 1;
+    }
+    /// release sem
+    pub fn release_sem_resource(&mut self, tid: usize, sem_id: usize) {
+        self.sem_resource_list[sem_id] += 1;
+        self.sem_alloc_list[tid][sem_id] -= 1;
+    }
+    /// check deadlock if set enabled
+    pub fn check_dead_lock(&mut self) -> isize {
+        if !self.dead_lock_check {
+            // Dont need to check
+            return 0;
+        }
+        let mut finish_list = vec![false; self.sem_need_list.len()];
+        let mut work = self.sem_resource_list.clone();
+
+        let n = finish_list.len();
+        let m = work.len();
+        loop {
+            let mut finish_count = 0;
+            for i in 0..n {
+                if finish_list[i] {
+                    continue;
+                }
+
+                let mut check_finish = true;
+                for j in 0..m {
+                    // println!("len:{}", self.sem_need_list[i].len());
+                    // println!(
+                    //     "check uid:{}, sem:{},need:{},work:{}",
+                    //     i, j, self.sem_need_list[i][j], work[j]
+                    // );
+                    if self.sem_need_list[i][j] > work[j] {
+                        check_finish = false;
+                        break;
+                    }
+                }
+                // println!("check uid:{}, status:{}", i, check_finish);
+                if check_finish {
+                    for j in 0..m {
+                        work[j] += self.sem_alloc_list[i][j];
+                    }
+                    finish_list[i] = true;
+                    finish_count += 1;
+                }
+            }
+
+            if finish_list.iter().fold(true, |res, &status| res & status) {
+                // not dead lock
+                return 0;
+            }
+
+            if finish_count == 0 {
+                // check dead lock
+                return -0xDEAD;
+            }
+        }
+    }
+
+    pub fn check_dead_lock_mutex(&mut self) -> isize {
+        if !self.dead_lock_check {
+            // Dont need to check
+            return 0;
+        }
+        let mut finish_list = vec![false; self.mutex_need_list.len()];
+        let mut work = self.mutex_resource_list.clone();
+
+        let n = finish_list.len();
+        let m = work.len();
+        loop {
+            let mut finish_count = 0;
+            for i in 0..n {
+                if finish_list[i] {
+                    continue;
+                }
+
+                let mut check_finish = true;
+                for j in 0..m {
+                    // println!(
+                    //     "check uid:{}, mutex:{},new:{},work:{}",
+                    //     i, j, self.mutex_need_list[i][j], work[j]
+                    // );
+                    if self.mutex_need_list[i][j] > work[j] {
+                        check_finish = false;
+                        break;
+                    }
+                }
+                if check_finish {
+                    for j in 0..m {
+                        work[j] += self.mutex_alloc_list[i][j];
+                    }
+                    finish_list[i] = true;
+                    finish_count += 1;
+                }
+            }
+
+            if finish_list.iter().fold(true, |res, &status| res & status) {
+                // not dead lock
+                return 0;
+            }
+
+            if finish_count == 0 {
+                // check dead lock
+                return -0xDEAD;
+            }
+        }
     }
 }
 
@@ -119,6 +334,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    dead_lock_check: false,
+                    mutex_resource_list: Vec::new(),
+                    mutex_need_list: Vec::new(),
+                    mutex_alloc_list: Vec::new(),
+                    sem_resource_list: Vec::new(),
+                    sem_need_list: Vec::new(),
+                    sem_alloc_list: Vec::new(),
                 })
             },
         });
@@ -144,6 +366,7 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        process_inner.alloc_dead_lock_graph();
         drop(process_inner);
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
@@ -245,6 +468,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    dead_lock_check: false,
+                    mutex_resource_list: Vec::new(),
+                    mutex_need_list: Vec::new(),
+                    mutex_alloc_list: Vec::new(),
+                    sem_resource_list: Vec::new(),
+                    sem_need_list: Vec::new(),
+                    sem_alloc_list: Vec::new(),
                 })
             },
         });
@@ -267,6 +497,7 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.alloc_dead_lock_graph();
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
